@@ -1,8 +1,11 @@
 #!/bin/env python3
 
 """
-Telegram bot that uses api.dortos.ru to work!
+    Telegram bot that uses api.dortos.ru to work!
 """
+
+# Pylint can't determine type of PostgreSQL Connection
+# pylint: disable=E1103
 
 import copy
 import json
@@ -68,6 +71,26 @@ def check_institute(inst_id: int):
                                 date_end)
                 break
 
+def check_chat(chat_id: int, current_week: date=None) -> None:
+    """
+        Checks if an chat exists in database, adds it there if not
+    """
+    if current_week is None:
+        current_week = date.today()
+        if current_week.weekday() == 6:
+            current_week += timedelta(days=1)
+        current_week -= timedelta(days=current_week.weekday())
+    chat_count = PGSQLDB.prepare("SELECT COUNT(id) FROM chat WHERE id=$1::bigint")\
+                        .first(chat_id)
+    if chat_count == 0:
+        PGSQLDB.prepare("INSERT INTO chat(id,week) VALUES($1::bigint,$2::date)")\
+                       (chat_id,
+                        current_week)
+    else:
+        PGSQLDB.prepare("UPDATE chat SET week=$2::date WHERE id=$1::bigint")\
+                       (chat_id,
+                        current_week)
+
 def start(_, update):
     """
         Handles `/start` command
@@ -132,16 +155,7 @@ def start(_, update):
                             current_week,
                             authinfo["GUID"])
     else:
-        chat_count = PGSQLDB.prepare("SELECT COUNT(id) FROM chat WHERE id=$1::bigint")\
-                            .first(update.message.chat.id)
-        if chat_count == 0:
-            PGSQLDB.prepare("INSERT INTO chat(id,week) VALUES($1::bigint,$2::date)")\
-                           (update.message.chat.id,
-                            current_week)
-        else:
-            PGSQLDB.prepare("UPDATE chat SET week=$2::date WHERE id=$1::bigint")\
-                           (update.message.chat.id,
-                            current_week)
+        check_chat(update.message.chat.id, current_week)
     reply_markup = InlineKeyboardMarkup(kbd.START_KEYBOARD)
     update.message.reply_text("Выберите пункт меню", reply_markup=reply_markup)
 
@@ -215,24 +229,7 @@ def timetable_handler(bot, query):
                                                   strings.MONTHS[current_date.month-1])
     for lesson in timetable:
         if ("printed" in lesson and lesson["printed"] != True) or ("printed" not in lesson):
-            if lesson["id_sub_group"] == '0':
-                reply_text += "*{} пара {} - {} {}*\n".format(lesson["time_id"],
-                                                              lesson["time_on"][:-3],
-                                                              lesson["time_off"][:-3],
-                                                              lesson["name"])
-            else:
-                reply_text += "*{} пара {} - {} {} подгруппа {}*\n".format(lesson["time_id"],
-                                                                           lesson["time_on"][:-3],
-                                                                           lesson["time_off"][:-3],
-                                                                           lesson["id_sub_group"],
-                                                                           lesson["name"])
-            if ("lesson" in lesson) and (lesson["lesson"] != ""):
-                reply_text += "{} ".format(lesson["lesson"])
-            if ("cab" in lesson) and (lesson["cab"] != ""):
-                reply_text += "{} ".format(lesson["cab"])
-            if ("prepod" in lesson) and (lesson["prepod"] != ""):
-                reply_text += "{}".format(lesson["prepod"])
-            reply_text += "\n\n"
+            reply_text += parse_lesson(lesson)
             lesson["printed"] = True
     bot.answer_callback_query(callback_query_id=query.id,
                               show_alert=False)
@@ -244,13 +241,44 @@ def timetable_handler(bot, query):
                           text=reply_text,
                           parse_mode=ParseMode.MARKDOWN)
 
+def parse_lesson(lesson: dict) -> str:
+    """
+        Parse `lesson` and append it to `text`
+    """
+    tmp = ""
+    if lesson["id_sub_group"] == '0':
+        tmp += "*{} пара {} - {} {}*\n".format(lesson["time_id"],
+                                               lesson["time_on"][:-3],
+                                               lesson["time_off"][:-3],
+                                               lesson["name"])
+    else:
+        tmp += "*{} пара {} - {} {} подгруппа {}*\n".format(lesson["time_id"],
+                                                            lesson["time_on"][:-3],
+                                                            lesson["time_off"][:-3],
+                                                            lesson["id_sub_group"],
+                                                            lesson["name"])
+    if ("lesson" in lesson) and (lesson["lesson"] != ""):
+        tmp += "{} ".format(lesson["lesson"])
+    if ("cab" in lesson) and (lesson["cab"] != ""):
+        tmp += "{} ".format(lesson["cab"])
+    if ("prepod" in lesson) and (lesson["prepod"] != ""):
+        tmp += "{}".format(lesson["prepod"])
+    tmp += "\n\n"
+    return tmp
+
 def tasks_handler(bot, query):
+    """
+        Handles "Задания" button
+    """
     bot.edit_message_text(chat_id=query.message.chat_id,
                           message_id=query.message.message_id,
                           text="В процессе разработки!",
                           reply_markup=kbd.HOME_MARKUP)
 
 def profile_handler(bot, query):
+    """
+        Handles "Профиль" button
+    """
     response = PGSQLDB.prepare('SELECT "user".first_name, "user".last_name, "user".role,'\
                                '"group".name as group_name, institute.name AS inst_name '\
                                'FROM ((chat INNER JOIN "user" ON "user".guid=chat.guid) '\
@@ -263,7 +291,7 @@ def profile_handler(bot, query):
         bot.send_message(text="""Вы не зарегистрировались в боте!
 Для регистрации необходимо авторизоваться на сайте https://dortos.ru и нажать на кнопку с иконкой Telegram сверху
 Откроется приложение на этом чате с кнопкой Старт внизу
-Нажмите её, и регистрация будет завершена!""", 
+Нажмите её, и регистрация будет завершена!""",
                          chat_id=query.message.chat_id,
                          reply_markup=kbd.HOME_MARKUP)
         return
@@ -278,6 +306,9 @@ def profile_handler(bot, query):
                           reply_markup=kbd.HOME_MARKUP)
 
 def search_handler(bot, query):
+    """
+        Handles "Поиск групп" button
+    """
     bot.delete_message(chat_id=query.message.chat_id,
                        message_id=query.message.message_id)
     bot.send_message(chat_id=query.message.chat_id,
@@ -285,26 +316,35 @@ def search_handler(bot, query):
                      reply_markup=ForceReply(force_reply=True))
 
 def button(bot, update):
+    """
+        Main button handler
+    """
     query = update.callback_query
-    reply_markup = InlineKeyboardMarkup(kbd.START_KEYBOARD)
-    if (query.data.startswith("timetable")):
+    check_chat(query.message.chat_id)
+    if query.data.startswith("timetable"):
         timetable_handler(bot, query)
-    elif (query.data.startswith("tasks")):
+    elif query.data.startswith("tasks"):
         tasks_handler(bot, query)
-    elif (query.data.startswith("profile")):
+    elif query.data.startswith("profile"):
         profile_handler(bot, query)
-    elif (query.data.startswith("search")):
+    elif query.data.startswith("search"):
         search_handler(bot, query)
-    elif (query.data.startswith("home")):
+    elif query.data.startswith("home"):
         home(bot, query)
 
-def select_group(id: int, chatid: int):
+def select_group(group_id: int, chat_id: int):
+    """
+        Updates `chat.group_id` field of `chat_id`
+    """
     PGSQLDB.prepare("UPDATE chat SET group_id=$1::bigint WHERE id=$2::bigint")\
-                   (id, chatid)
+                   (group_id, chat_id)
 
 def regex(bot, update):
+    """
+        Handler for /{group_id} messages
+    """
     response = get_json("https://api.dortos.ru/v2/groups/getById?id_group=%s" % (update.message.text[1:]))
-    if (len(response) == 0):
+    if len(response) == 0:
         bot.send_message(chat_id=update.message.chat.id,
                          text="Выбранной группы не существует!",
                          reply_markup=kbd.HOME_MARKUP)
@@ -315,49 +355,53 @@ def regex(bot, update):
                          reply_markup=kbd.HOME_MARKUP)
 
 def group_search(bot, update):
-    if (update.message.reply_to_message.text == strings.SEARCH_STRING):
+    """
+        Handler for search query
+    """
+    if update.message.reply_to_message.text == strings.SEARCH_STRING:
         search_results = get_json("https://api.dortos.ru/v2/groups/search?q={}".format(urllib.parse.quote_plus(update.message.text)))
-        if (len(search_results) == 1):
+        if len(search_results) == 1:
             select_group(int(search_results[0]["ID"]), update.message.chat.id)
             bot.send_message(chat_id=update.message.chat.id,
                              text="Выбрана группа {}".format(search_results[0]["name_group"]),
                              reply_markup=kbd.HOME_MARKUP)
             return
-        if (len(search_results) == 0):
+        if len(search_results) == 0:
             bot.send_message(chat_id=update.message.chat.id,
                              text="По вашему запросу ничего не найдено",
                              reply_markup=kbd.HOME_MARKUP)
             return
-        reply = """Вот результаты поиска по \"{}\"
-Выберите нужную группу
-
-""".format(update.message.text)
+        reply = "Вот результаты поиска по \"{}\"\n".format(update.message.text)
+        reply += "Выберите нужную группу\n\n"
         for result in search_results:
-            reply += """/{} {}
-""".format(result["ID"], result["name_group"])
+            reply += "/{} {}\n".format(result["ID"], result["name_group"])
         bot.send_message(chat_id=update.message.chat.id, text=reply, reply_markup=kbd.HOME_MARKUP)
 
-def error(bot, update, error):
-    if not isinstance(error, TimedOut):
-        LOGGER.warning('Update "%s" caused error "%s"', update, error)
+def error(_, update, err):
+    """
+        Error handler
+    """
+    if not isinstance(err, TimedOut):
+        LOGGER.warning('Update "%s" caused error "%s"', update, err)
 
 if __name__ == "__main__":
     locale.setlocale(locale.LC_ALL, "ru_RU.UTF-8")
     locale.resetlocale()
 
-    config = load_config()
+    CONFIG = load_config()
     global PGSQLDB
-    PGSQLDB = postgresql.open("pq://{}:{}@{}:{}/{}?client_encoding='utf-8'".format(config["login"],
-                                                                                   config["password"],
-                                                                                   config["host"],
-                                                                                   config["port"],
-                                                                                   config["db"]))
+    CONN_STR = "pq://{}:{}@{}:{}/{}?client_encoding='utf-8'".format(CONFIG["login"],
+                                                                    CONFIG["password"],
+                                                                    CONFIG["host"],
+                                                                    CONFIG["port"],
+                                                                    CONFIG["db"])
+    PGSQLDB = postgresql.open(CONN_STR)
 
-    updater = Updater(config["token"])
-    updater.dispatcher.add_handler(CommandHandler("start", start))
-    updater.dispatcher.add_handler(CallbackQueryHandler(button))
-    updater.dispatcher.add_handler(RegexHandler("\/\d+", regex))
-    updater.dispatcher.add_handler(MessageHandler(Filters.text & Filters.reply, group_search))
-    updater.dispatcher.add_error_handler(error)
-    updater.start_polling()
-    updater.idle()
+    UPDATER = Updater(CONFIG["token"])
+    UPDATER.dispatcher.add_handler(CommandHandler("start", start))
+    UPDATER.dispatcher.add_handler(CallbackQueryHandler(button))
+    UPDATER.dispatcher.add_handler(RegexHandler(r'\/\d+', regex))
+    UPDATER.dispatcher.add_handler(MessageHandler(Filters.text & Filters.reply, group_search))
+    UPDATER.dispatcher.add_error_handler(error)
+    UPDATER.start_polling()
+    UPDATER.idle()

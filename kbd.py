@@ -1,7 +1,6 @@
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 
-START_KEYBOARD = [[InlineKeyboardButton("Расписание", callback_data='timetable'),
-                   InlineKeyboardButton("Задания", callback_data='tasks'),],
+START_KEYBOARD = [[InlineKeyboardButton("Расписание", callback_data='timetable')],
                   [InlineKeyboardButton("Профиль", callback_data='profile'),
                    InlineKeyboardButton("Поиск групп", callback_data='search')]]
 
