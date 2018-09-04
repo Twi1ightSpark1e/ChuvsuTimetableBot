@@ -71,6 +71,21 @@ def check_institute(inst_id: int):
                                 date_end)
                 break
 
+def update_chat_week(chat_id: int, current_week: date=None) -> date:
+    """
+        Updates chat current_week. If second para is None, automatically selects today
+    """
+    if current_week is None:
+        current_week = date.today()
+        if current_week.weekday() == 6:
+            current_week += timedelta(days=1)
+        current_week -= timedelta(days=current_week.weekday())
+    print("updating {} up to {}".format(chat_id, current_week))
+    PGSQLDB.prepare("UPDATE chat SET week=$2::date WHERE id=$1::bigint")\
+                   (chat_id,
+                    current_week)
+    return current_week
+
 def check_chat(chat_id: int, current_week: date=None) -> None:
     """
         Checks if an chat exists in database, adds it there if not
@@ -84,10 +99,6 @@ def check_chat(chat_id: int, current_week: date=None) -> None:
                         .first(chat_id)
     if chat_count == 0:
         PGSQLDB.prepare("INSERT INTO chat(id,week) VALUES($1::bigint,$2::date)")\
-                       (chat_id,
-                        current_week)
-    else:
-        PGSQLDB.prepare("UPDATE chat SET week=$2::date WHERE id=$1::bigint")\
                        (chat_id,
                         current_week)
 
@@ -156,6 +167,7 @@ def start(_, update):
                             authinfo["GUID"])
     else:
         check_chat(update.message.chat.id, current_week)
+        update_chat_week(update.message.chat.id, current_week)
     reply_markup = InlineKeyboardMarkup(kbd.START_KEYBOARD)
     update.message.reply_text("Выберите пункт меню", reply_markup=reply_markup)
 
@@ -189,23 +201,28 @@ def timetable_handler(bot, query):
     current_keyboard = copy.deepcopy(kbd.DAYS_KEYBOARD)
     chat = PGSQLDB.prepare("SELECT week,group_id FROM chat WHERE id=$1::bigint")\
                   .first(query.message.chat_id)
-    minimal_date = chat["week"]
-    current_date = max(date.today(), minimal_date)
-    if current_date.weekday() == 6:
-        current_date += timedelta(days=1)
+    current_week = chat["week"]
+    if current_week.weekday() == 6:
+        current_week += timedelta(days=1)
     if "_" in query.data:
+        # May be prev/next or weekday
         parameter = query.data[10:]
         if parameter == "prev":
-            current_date = minimal_date - timedelta(days=7)
+            current_week -= timedelta(days=7)
             PGSQLDB.prepare("UPDATE chat SET week=$1::date WHERE id=$2::bigint")\
-                           (current_date, query.message.chat_id)
+                           (current_week, query.message.chat_id)
+            print("updating {} up to {}".format(query.message.chat_id, current_week))
         elif parameter == "next":
-            current_date = minimal_date + timedelta(days=7)
+            current_week += timedelta(days=7)
             PGSQLDB.prepare("UPDATE chat SET week=$1::date WHERE id=$2::bigint")\
-                           (current_date, query.message.chat_id)
+                           (current_week, query.message.chat_id)
+            print("updating {} up to {}".format(query.message.chat_id, current_week))
         else:
-            current_date -= timedelta(days=current_date.weekday())
-            current_date += timedelta(days=int(parameter))
+            current_week -= timedelta(days=current_week.weekday() - int(parameter))
+    else:
+        # Happens only if user just selected this button
+        # So I want to he get timetable for today
+        current_week = update_chat_week(query.message.chat_id) + timedelta(date.today().weekday())
     if chat["group_id"] is None:
         #group is not selected
         search_handler(bot, query)
@@ -213,7 +230,7 @@ def timetable_handler(bot, query):
     else:
         group_id = chat["group_id"]
 
-    current_weekday = current_date.weekday()
+    current_weekday = current_week.weekday()
     current_keyboard[0][current_weekday] = InlineKeyboardButton(
         "*{}*".format(kbd.DAYS_KEYBOARD[0][current_weekday].text),
         callback_data=kbd.DAYS_KEYBOARD[0][current_weekday].callback_data
@@ -222,48 +239,70 @@ def timetable_handler(bot, query):
     request_str = "https://api.dortos.ru/v2/groups/getById?id_group=%d" % (group_id)
     group_name = get_json(request_str)[0]["name_group"]
     request_str = "https://api.dortos.ru/v2/timetable/get?"\
-                  "date_start={0}&date_end={0}&group_id={1}".format(current_date, group_id)
+                  "date_start={0}&date_end={0}&group_id={1}".format(current_week, group_id)
     timetable = get_json(request_str)
     reply_text = "👥 *{}*\n📅 *{} {}*\n\n".format(group_name,
-                                                  current_date.day,
-                                                  strings.MONTHS[current_date.month-1])
-    for lesson in timetable:
-        if ("printed" in lesson and lesson["printed"] != True) or ("printed" not in lesson):
-            reply_text += parse_lesson(lesson)
-            lesson["printed"] = True
+                                                  current_week.day,
+                                                  strings.MONTHS[current_week.month-1])
+    reply_text += parse_timetable(timetable)
     bot.answer_callback_query(callback_query_id=query.id,
                               show_alert=False)
-    print("{} executed {}".format(query.message.chat_id,
-                                  query.data))
     bot.edit_message_text(chat_id=query.message.chat_id,
                           message_id=query.message.message_id,
                           reply_markup=reply_markup,
                           text=reply_text,
                           parse_mode=ParseMode.MARKDOWN)
 
-def parse_lesson(lesson: dict) -> str:
+def parse_additional_lesson_info(lesson: map) -> str:
     """
-        Parse `lesson` and append it to `text`
+        Parse lesson type, cabinet or teacher from lesson, if they are exists
     """
     tmp = ""
-    if lesson["id_sub_group"] == '0':
-        tmp += "*{} пара {} - {} {}*\n".format(lesson["time_id"],
-                                               lesson["time_on"][:-3],
-                                               lesson["time_off"][:-3],
-                                               lesson["name"])
-    else:
-        tmp += "*{} пара {} - {} {} подгруппа {}*\n".format(lesson["time_id"],
-                                                            lesson["time_on"][:-3],
-                                                            lesson["time_off"][:-3],
-                                                            lesson["id_sub_group"],
-                                                            lesson["name"])
     if ("lesson" in lesson) and (lesson["lesson"] != ""):
         tmp += "{} ".format(lesson["lesson"])
     if ("cab" in lesson) and (lesson["cab"] != ""):
         tmp += "{} ".format(lesson["cab"])
     if ("prepod" in lesson) and (lesson["prepod"] != ""):
         tmp += "{}".format(lesson["prepod"])
-    tmp += "\n\n"
+    return tmp
+
+def parse_timetable(timetable: list) -> str:
+    """
+        Parse whole timetable and return it's string representation
+    """
+    tmp = ""
+    for lesson in timetable:
+        if ("printed" in lesson and lesson["printed"] != True) or ("printed" not in lesson):
+            if lesson["id_sub_group"] == '0':
+                tmp += "*{} пара {} - {} {}*\n".format(lesson["time_id"],
+                                                       lesson["time_on"][:-3],
+                                                       lesson["time_off"][:-3],
+                                                       lesson["name"])
+                tmp += "{}\n\n".format(parse_additional_lesson_info(lesson))
+            else:
+                this_lessons = [lesson]
+                for this_lesson in timetable:
+                    if (lesson != this_lesson) and\
+                       (lesson["day"] == this_lesson["day"]) and\
+                       (lesson["time_id"] == this_lesson["time_id"]):
+                        this_lessons.append(this_lesson)
+                if len(this_lessons) == 1:
+                    tmp += "*{} пара {} - {} {} подгруппа {}*\n".format(lesson["time_id"],
+                                                                        lesson["time_on"][:-3],
+                                                                        lesson["time_off"][:-3],
+                                                                        lesson["id_sub_group"],
+                                                                        lesson["name"])
+                    tmp += "{}\n\n".format(parse_additional_lesson_info(this_lesson))
+                else:
+                    tmp += "*{} пара {} - {}*\n".format(lesson["time_id"],
+                                                        lesson["time_on"][:-3],
+                                                        lesson["time_off"][:-3])
+                    for this_lesson in this_lessons:
+                        tmp += "*{} подгруппа {}* ".format(this_lesson["id_sub_group"],
+                                                           this_lesson["name"])
+                        tmp += "{}\n".format(parse_additional_lesson_info(this_lesson))
+                        this_lesson["printed"] = True
+                    tmp += "\n"
     return tmp
 
 def tasks_handler(bot, query):
