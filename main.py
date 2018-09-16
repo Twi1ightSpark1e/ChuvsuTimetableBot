@@ -313,7 +313,7 @@ def parse_timetable(timetable: list) -> str:
     for lesson in timetable:
         if not lesson.get("printed", False):
             if lesson["id_sub_group"] == '0':
-                tmp += "*{} пара {} - {} {}*\n".format(lesson["time_id"],
+                tmp += "*{}⃣ пара {} - {} {}*\n".format(lesson["time_id"],
                                                        lesson["time_on"][:-3],
                                                        lesson["time_off"][:-3],
                                                        lesson["name"])
@@ -326,7 +326,7 @@ def parse_timetable(timetable: list) -> str:
                        (lesson["time_id"] == this_lesson["time_id"])):
                         this_lessons.append(this_lesson)
                 if len(this_lessons) == 1:
-                    tmp += "*{} пара {} - {} {} подгруппа {}*\n".format(
+                    tmp += "*{}⃣ пара {} - {} {} подгруппа {}*\n".format(
                             lesson["time_id"],
                             lesson["time_on"][:-3],
                             lesson["time_off"][:-3],
@@ -335,7 +335,7 @@ def parse_timetable(timetable: list) -> str:
                     tmp += "{}\n\n".format(
                             parse_additional_lesson_info(this_lesson))
                 else:
-                    tmp += "*{} пара {} - {}*\n".format(
+                    tmp += "*{}⃣ пара {} - {}*\n".format(
                             lesson["time_id"],
                             lesson["time_on"][:-3],
                             lesson["time_off"][:-3])
